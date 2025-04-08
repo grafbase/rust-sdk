@@ -17,7 +17,7 @@ use tracing::Instrument;
 
 use crate::{
     RoleServer, Service,
-    model::ClientJsonRpcMessage,
+    model::{ClientJsonRpcMessage, GetExtensions, JsonRpcBatchRequestItem, JsonRpcMessage},
     service::{RxJsonRpcMessage, TxJsonRpcMessage},
 };
 type SessionId = Arc<str>;
@@ -69,8 +69,9 @@ pub struct PostEventQuery {
 
 async fn post_event_handler(
     State(app): State<App>,
+    headers: axum::http::HeaderMap,
     Query(PostEventQuery { session_id }): Query<PostEventQuery>,
-    Json(message): Json<ClientJsonRpcMessage>,
+    Json(mut message): Json<ClientJsonRpcMessage>,
 ) -> Result<StatusCode, StatusCode> {
     tracing::debug!(session_id, ?message, "new client message");
     let tx = {
@@ -79,6 +80,25 @@ async fn post_event_handler(
             .ok_or(StatusCode::NOT_FOUND)?
             .clone()
     };
+    match &mut message {
+        JsonRpcMessage::Request(req) => {
+            req.request.extensions_mut().insert(headers);
+        }
+        JsonRpcMessage::Response(_) => (),
+        JsonRpcMessage::Notification(_) => (),
+        JsonRpcMessage::BatchRequest(batch) => {
+            for item in batch {
+                match item {
+                    JsonRpcBatchRequestItem::Request(req) => {
+                        req.request.extensions_mut().insert(headers.clone());
+                    }
+                    JsonRpcBatchRequestItem::Notification(_) => (),
+                }
+            }
+        }
+        JsonRpcMessage::BatchResponse(_) => (),
+        JsonRpcMessage::Error(_) => (),
+    }
     if tx.send(message).await.is_err() {
         tracing::error!("send message error");
         return Err(StatusCode::GONE);
